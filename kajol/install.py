@@ -394,19 +394,34 @@ def uninstall(pkgname, *, user=False, yes=False):
     if not yes and not input(f"are you sure you want to uninstall {pkgname}? ") == "y":
         return
         
+    conf = ConfigParser()
+        
     for dist_info in dist_infos:
-        entry_points_path = dist_info / "entry_points.txt"
-        if entry_points_path.is_file():
-            conf = ConfigParser()
-            conf.read(str(entry_points_path))
+        if (entry_points_path := dist_info / "entry_points.txt").is_file():
+            conf.read(entry_points_path)
             if "console_scripts" in conf:
                 entries = conf["console_scripts"]
                 for ex, _ in entries.items():
-                    os.remove(
-                        Path(sys.executable).parent / 
-                        (ex + (".bat" if os.name == "nt" else ""))
-                    )
-                
+                    if os.name == "nt":
+                        try:
+                            os.remove(
+                                Path(sysconfig.get_path("scripts")) / 
+                                (ex + ".bat")
+                            )
+                        except:
+                            try:
+                                os.remove(
+                                    Path(sysconfig.get_path("scripts")) / 
+                                    (ex + ".exe")
+                                )
+                            except: pass
+                    else:
+                        try:
+                            os.remove(
+                                Path(sysconfig.get_path("scripts")) / ex, "w"
+                            )
+                        except: pass
+        
         record_path = dist_info / "RECORD"
         if record_path.exists():
             lines = record_path.read_text(encoding="utf-8").splitlines()

@@ -79,8 +79,7 @@ def build():
     conf = load_module_from_file("kajol.__loaded_config__", "kajol.config.py").conf
     
     build_dir = Path("./build") / wheel_tags()
-    if build_dir.is_dir():
-        shutil.rmtree(build_dir, ignore_errors=True)
+    shutil.rmtree(build_dir, ignore_errors=True)
     build_dir.mkdir(parents=True)
     
     print("building to", build_dir)
