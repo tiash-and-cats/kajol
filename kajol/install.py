@@ -127,7 +127,7 @@ supported = set(packaging.tags.sys_tags())
 
 def parse_tags(filename):
     parts = filename.split("-")
-    return {packaging.tags.Tag(parts[2], parts[3], parts[4].rstrip(".whl"))}
+    return {packaging.tags.Tag(parts[2], parts[3], parts[4].removesuffix(".whl"))}
 
 def best_wheel(requirement: Requirement):
     # Step 1: fetch the simple index page

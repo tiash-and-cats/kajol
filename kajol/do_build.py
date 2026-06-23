@@ -6,6 +6,7 @@ import sysconfig
 import fnmatch
 import pickle
 import zipfile
+import tomllib
 from pprint import pprint
 from pathlib import Path
 from configparser import ConfigParser as IniParser
@@ -55,6 +56,10 @@ def wheel_tags():
     plat_tag = sysconfig.get_platform().replace("-", "_").replace(".", "_")
     return f"{py_tag}-{py_tag}-{plat_tag}"
 
+def wheel_tags_pure():
+    py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    return f"{py_tag}-none-any"
+
 def init():
     with open("kajol.config.py", "w") as f:
         print("from kajol.build import *", file=f)
@@ -75,8 +80,50 @@ def is_inside(path, parent):
     except ValueError:
         return False
 
-def build():
-    conf = load_module_from_file("kajol.__loaded_config__", "kajol.config.py").conf
+def build_wheel(output_directory, config_settings=None, metadata_directory=None):
+    Path(output_directory).mkdir(exist_ok=True)
+    for wheel in build(True):
+        os.rename(wheel, Path(output_directory) / wheel)
+
+def build(no_lock=False):
+    try:
+        conf = load_module_from_file("kajol.__loaded_config__", "kajol.config.py").conf
+    except ModuleNotFoundError:
+        if Path("pyproject.toml").is_file():
+            with open("pyproject.toml") as f:
+                pyproject = tomllib.load(f)
+            
+            assert "project" in pyproject, "pyproject.toml needs a [project]" \
+                                           "table"
+            project = pyproject["project"]
+            
+            kajol_config = pyproject.get("tool", {}).get("kajol", {})
+            
+            if "dynamic" in project and "dependencies" in project["dynamic"]:
+                no_lock = False
+            
+            conf = Config(
+                name=project["name"],
+                author=project.get("authors", {"name":"Eric Idle"})[0]["name"],
+                version=project["version"],
+                summary=project.get("description", ""),
+                readme=project.get("readme", "README.md"),
+                license=project.get("license", "MIT"),
+                classifiers=project.get("classifiers", []),
+                build=BuildConfig(
+                    extensions=map(
+                        lambda d: Extension(**d), 
+                        kajol_config.get("c_exts", [])
+                    ),
+                    ignore=kajol_config.get("ignore", []),
+                    deps=project.get("dependencies", []),
+                    vendor_dir=kajol_config.get("vendor_dir"),
+                    entry_pts=project.get("scripts", {})
+                )
+            )
+        else:
+            raise FileNotFoundError("config file not found: couldn't find a"
+                                    "kajol.config.py or pyproject.toml!")
     
     build_dir = Path("./build") / wheel_tags()
     shutil.rmtree(build_dir, ignore_errors=True)
@@ -97,7 +144,7 @@ def build():
     record = []
     
     deps = []
-    if Path("kajol.lock.pkl").is_file():
+    if Path("kajol.lock.pkl").is_file() and not no_lock:
         with open("kajol.lock.pkl", "rb") as lockfile:
             deps.extend(pickle.load(lockfile))
     deps.extend(conf.build.deps)
@@ -180,4 +227,15 @@ def build():
                 rel = file_path.relative_to(build_dir)
                 zipf.write(file_path, rel)
     
+    wheels = [wheel]
+    
     print("successfully built a wheel:", wheel)
+    
+    if not conf.build.extensions:
+        wheel_pure = Path(
+            f"{conf.name}-{conf.version}-{wheel_tags_pure()}.whl"
+        ).resolve()
+        shutil.copy(wheel, wheel_pure)
+        wheels.append(wheel_pure)
+    
+    return wheels
