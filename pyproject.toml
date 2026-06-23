@@ -1,0 +1,21 @@
+[build-system]
+requires = ["https://github.com/tiash-and-cats/kajol/releases/download/v1.1.0/kajol-1.1.0-cp314-none-any.whl"]
+build-backend = "kajol.do_build"
+
+[project]
+name = "kajol"
+version = "1.1.1"
+dependencies = [
+    "requests",
+    "packaging"
+]
+authors = [
+    {name = "tiash-and-cats", email = "tiash.rbm@gmail.com"},
+]
+
+[project.scripts]
+kajol = "kajol.__main__:main"
+
+[tool.kajol]
+ignore = ["env/*", "test/*", "docs/*", ".git/*"]
+vendor_dir = "kajol/_vendor"

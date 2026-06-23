@@ -88,7 +88,7 @@ def build_wheel(output_directory, config_settings=None, metadata_directory=None)
 def build(no_lock=False):
     try:
         conf = load_module_from_file("kajol.__loaded_config__", "kajol.config.py").conf
-    except ModuleNotFoundError:
+    except FileNotFoundError:
         if Path("pyproject.toml").is_file():
             with open("pyproject.toml") as f:
                 pyproject = tomllib.load(f)
@@ -163,7 +163,7 @@ def build(no_lock=False):
 
             dest = build_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            record.append(str(file_path))
+            record.append(str(rel))
             shutil.copy2(file_path, dest)
     
     print("\ncopied files")
@@ -235,6 +235,7 @@ def build(no_lock=False):
         wheel_pure = Path(
             f"{conf.name}-{conf.version}-{wheel_tags_pure()}.whl"
         ).resolve()
+        print("copying to", wheel_pure)
         shutil.copy(wheel, wheel_pure)
         wheels.append(wheel_pure)
     

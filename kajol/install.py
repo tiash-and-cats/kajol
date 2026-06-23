@@ -203,7 +203,7 @@ def get(pkgspec, user, depnts, deptree, deps, where):
         return
     
     if pkgspec.endswith(".whl") and Path(pkgspec).is_file():
-        with open(pkgspec) as f:
+        with open(pkgspec, "rb") as f:
             content = f.read()
         
         fname = pkgspec
