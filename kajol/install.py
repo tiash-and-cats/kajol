@@ -351,7 +351,7 @@ def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
                             ) as f:
                                 f.write(
                                     f'@{sys.executable} "-c'
-                                    f'from sys import*;argv[0]=\'%0\';import {mod};exit({mod}.{fn}())" %*'
+                                    f'from sys import*;argv[0]=r\'%0\';import {mod};exit({mod}.{fn}())" %*'
                                 )
                         else:
                             with open(

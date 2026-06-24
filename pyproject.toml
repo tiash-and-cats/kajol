@@ -1,10 +1,13 @@
 [build-system]
-requires = ["https://github.com/tiash-and-cats/kajol/releases/download/v1.1.0/kajol-1.1.0-cp314-none-any.whl"]
+requires = ["https://github.com/tiash-and-cats/kajol/releases/download/v1.1.1/kajol-1.1.1-cp314-none-any.whl"]
 build-backend = "kajol.do_build"
 
 [project]
 name = "kajol"
 version = "1.1.1"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE.txt"]
 dependencies = [
     "requests",
     "packaging"
@@ -12,6 +15,12 @@ dependencies = [
 authors = [
     {name = "tiash-and-cats", email = "tiash.rbm@gmail.com"},
 ]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent"
+]
+
 
 [project.scripts]
 kajol = "kajol.__main__:main"

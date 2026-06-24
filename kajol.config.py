@@ -9,9 +9,9 @@ conf = Config(name='kajol',
        classifiers=[],
        build=BuildConfig(extensions=[],
                          ignore=[
-                            "env/*", "test/*", "docs/*", ".git/*", "README.md",
-                            "LICENSE.txt", "pyproject.toml", "*/__pycache__/*",
-                            "__pycache__/*"
+                            "env/*", "test/*", "docs/*", ".git/*",
+                            "pyproject.toml", "*/__pycache__/*",
+                            "__pycache__/*", ".gitignore",
                          ],
                          deps=["requests", "packaging"],
                          vendor_dir="kajol/_vendor",

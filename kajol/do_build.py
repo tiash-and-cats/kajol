@@ -7,6 +7,7 @@ import fnmatch
 import pickle
 import zipfile
 import tomllib
+import os
 from pprint import pprint
 from pathlib import Path
 from configparser import ConfigParser as IniParser
@@ -82,11 +83,14 @@ def is_inside(path, parent):
 
 def build_wheel(output_directory, config_settings=None, metadata_directory=None):
     Path(output_directory).mkdir(exist_ok=True)
-    for wheel in build(True):
+    wheels = build(True, True)
+    for wheel in wheels:
         os.rename(wheel, Path(output_directory) / wheel)
+    return str(Path(output_directory) / wheels[-1])
 
-def build(no_lock=False):
+def build(no_lock=False, force_pyproject=False):
     try:
+        if force_pyproject: raise FileNotFoundError
         conf = load_module_from_file("kajol.__loaded_config__", "kajol.config.py").conf
     except FileNotFoundError:
         if Path("pyproject.toml").is_file():
