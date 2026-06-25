@@ -142,7 +142,7 @@ def build(no_lock=False, force_pyproject=False):
             compile_c(ext.files, ext.output)
     
     conf.build.ignore = [
-        "*.whl", "kajol.lock.pkl", "kajol.config.py", *conf.build.ignore
+        "*.whl", "kajol.lock.pkl", *conf.build.ignore
     ]
         
     record = []

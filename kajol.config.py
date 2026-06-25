@@ -2,7 +2,7 @@ from kajol.build import *
 
 conf = Config(name='kajol',
        author='tiash-and-cats',
-       version='1.1.1',
+       version='1.2.0',
        summary='the kajol dependency manager: a FAST package manager (whoosh!)',
        readme='README.md',
        license='MIT',

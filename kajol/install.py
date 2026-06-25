@@ -11,6 +11,7 @@ import zipfile
 import pickle
 import io
 import os
+import stat
 from pathlib import Path
 from packaging.utils import parse_wheel_filename
 from packaging.requirements import Requirement
@@ -130,13 +131,13 @@ def parse_tags(filename):
     return {packaging.tags.Tag(parts[2], parts[3], parts[4].removesuffix(".whl"))}
 
 def best_wheel(requirement: Requirement):
-    # Step 1: fetch the simple index page
+    # fetch the simple index page
     url = f"https://pypi.org/simple/{normalize(requirement.name)}/"
     html = requests.get(url)
     html.raise_for_status()
     html = html.text
 
-    # Step 2: extract all links to .whl
+    # extract all links to .whl
     wheels = []
     for a in HTML.parse_dom(html).all_children():
         if isinstance(a, HTML.Element) and a.tag.lower() == "a" \
@@ -147,10 +148,10 @@ def best_wheel(requirement: Requirement):
                     if fname.endswith(".whl"):
                         wheels.append((fname, a.attrs["href"]))
 
-    # Step 3: get supported tags
+    # get supported tags
     supported = set(packaging.tags.sys_tags())
 
-    # Step 4: collect all compatible wheels
+    # collect all compatible wheels
     compatible = []
     for fname, href in wheels:
         name, version, build, tags = parse_wheel_filename(fname)
@@ -158,7 +159,7 @@ def best_wheel(requirement: Requirement):
             if not requirement.specifier or version in requirement.specifier:
                 compatible.append((version, fname, href))
 
-    # Step 5: pick the latest version among compatible
+    # pick the latest version among compatible
     if compatible:
         compatible.sort(key=lambda x: x[0], reverse=True)
         latest = compatible[0]
@@ -290,6 +291,12 @@ def progress_bar(txt, progress, total):
 
     print("\r\x1b[2K" + txt.ljust(50) + bar, end="")
 
+def add_executable_bit(filepath):
+    current_permissions = os.stat(filepath).st_mode
+    executable_bits = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    new_permissions = current_permissions | executable_bits
+    os.chmod(filepath, new_permissions)
+
 def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
     if not where:
         where = site_packages()
@@ -350,8 +357,9 @@ def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
                                 (ex + ".bat"), "w"
                             ) as f:
                                 f.write(
-                                    f'@{sys.executable} "-c'
-                                    f'from sys import*;argv[0]=r\'%0\';import {mod};exit({mod}.{fn}())" %*'
+                                    f'@{sys.executable} "-cimport sys as b,'
+                                    f'{mod} as a;b.argv[0]=r\'%0\';exit(a.{fn}'
+                                    f'())" %*'
                                 )
                         else:
                             with open(
@@ -364,6 +372,9 @@ def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
                                     if __name__ == "__main__":
                                         sys.exit({fn}())
                                 """))
+                            add_executable_bit(
+                                Path(sysconfig.get_path("scripts")) / ex
+                            )
                 except KeyError:
                     pass # no entry_points.txt? fine!
                 
