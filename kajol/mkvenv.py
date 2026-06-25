@@ -21,8 +21,8 @@ class EnvBuilder(venv.EnvBuilder):
             
             try:
                 dist_info = next(filter(
-                    lambda x: x.startswith("kajol-") and \
-                    x.endswith(".dist-info"),
+                    lambda x: x.name.startswith("kajol-") and \
+                    x.name.endswith(".dist-info"),
                     sys_site_packages().iterdir()
                 ))
             except StopIteration:
@@ -31,8 +31,7 @@ class EnvBuilder(venv.EnvBuilder):
             # copy kajol package into site-packages
             shutil.copytree(sys_site_packages() / "kajol", 
                             env_site_packages / "kajol")
-            shutil.copytree(sys_site_packages() / dist_info, 
-                            env_site_packages / dist_info)
+            shutil.copytree(dist_info, env_site_packages / dist_info.name)
             
             # make the kajol launcher
             with open(Path(context.bin_path) / 
