@@ -23,7 +23,7 @@ class EnvBuilder(venv.EnvBuilder):
                 dist_info = next(filter(
                     lambda x: x.startswith("kajol-") and \
                     x.endswith(".dist-info"),
-                    sys_site_packages()
+                    sys_site_packages().iterdir()
                 ))
             except StopIteration:
                 raise FileNotFoundError("couldn't find a kajol-*.dist-info in site-packages!")
