@@ -37,3 +37,8 @@ class EnvBuilder(venv.EnvBuilder):
                     print("@echo off", file=f)
                 print(f"python -m kajol {"$" if os.name != "nt" else "%"}*",
                       file=f)
+            
+            shutil.copy(
+                sys_site_packages() / "_kajol_vendor.pth", 
+                env_site_packages / "_kajol_vendor.pth"
+            )
