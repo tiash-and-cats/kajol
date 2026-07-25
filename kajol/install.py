@@ -207,8 +207,8 @@ def get(pkgspec, user, depnts, deptree, deps, where):
         with open(pkgspec, "rb") as f:
             content = f.read()
         
-        fname = pkgspec
-        dload = None
+        fpath = pkgspec
+        print("    loading", pkgspec, "from file")
     else:
         wheel = best_wheel(req)
         
@@ -257,7 +257,7 @@ def get(pkgspec, user, depnts, deptree, deps, where):
                 except KeyError:
                     raise FileNotFoundError(f"could not find {wheel}/{folder_prefix}/METADATA")
     
-    deptree.add((req, fname, dload))
+    deptree.add((req, fpath))
 
 BAR = chr(9608)
 
@@ -289,7 +289,7 @@ def progress_bar(txt, progress, total):
     # Add the numbers:
     bar += ' ' + str(progress) + '/' + str(total)
 
-    print("\r\x1b[2K" + txt.ljust(50) + bar, end="")
+    print("\r\x1b[2K" + txt.ljust(max(30, len(txt) + 5)) + bar, end="")
 
 def add_executable_bit(filepath):
     current_permissions = os.stat(filepath).st_mode
@@ -316,26 +316,10 @@ def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
     conf = ConfigParser()
     
     for i, dep in enumerate(deptree):
-        req, fname, dload = dep
+        req, fpath = dep
         progress_bar(f"installing {req.name}", i, len(deptree))
-        
-        if dload: # on an index
-            cache = Path.home() / ".kajol" / "cache"
-            fpath = cache / fname
-            content = None
-            if not fpath.exists():
-                response = requests.get(dload)
-                with open(fpath, "wb") as f:
-                    f.write(response.content)
-                content = response.content
-            else:
-                with open(fpath, "rb") as f:
-                    content = f.read()
-        else: # local
-            with open(fname, "rb") as f:
-                content = f.read()
                 
-        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+        with zipfile.ZipFile(fpath) as zf:
             fs = zf.namelist()
             
             if dist_info_folder := next(

@@ -6,7 +6,7 @@ import sysconfig
 import fnmatch
 import pickle
 import zipfile
-import tomllib
+import tomlkit as tomllib
 import os
 from pprint import pprint
 from pathlib import Path
@@ -14,7 +14,7 @@ from configparser import ConfigParser as IniParser
 import shutil
 
 from kajol.build import *
-from kajol.install import install
+from kajol.install import install, progress_bar
 
 def compile_c(files, out):
     gcc = shutil.which("gcc")
@@ -42,7 +42,7 @@ def compile_c(files, out):
         "-o", str(out)
     ]
 
-    print("$", " ".join(map(str, cmd)))
+    print("    $", " ".join(map(str, cmd)))
     subprocess.run(cmd, check=True)
     return Path(out)
 
@@ -62,12 +62,9 @@ def wheel_tags_pure():
     return f"{py_tag}-none-any"
 
 def init():
-    with open("kajol.config.py", "w") as f:
-        print("from kajol.build import *", file=f)
-        print(file=f)
-        print("conf = ", end="", file=f)
-        pprint(Config(Path.cwd().name, "Eric Idle", "0.0.0"), stream=f)
-    print("a kajol.config.py has been generated")
+    with open("pyproject.toml", "w") as f:
+        f.write(Config(Path.cwd().name, "Eric Idle", "0.0.0").pyproject())
+    print("a pyproject.toml has been generated")
     with open("README.md", "w") as f:
         print("#", Path.cwd().name, file=f)
         print(file=f)
@@ -91,55 +88,25 @@ def build_wheel(output_directory, config_settings=None, metadata_directory=None)
 def build(no_lock=False, force_pyproject=False):
     try:
         if force_pyproject: raise FileNotFoundError
-        conf = load_module_from_file("kajol.__loaded_config__", "kajol.config.py").conf
+        conf = load_module_from_file(
+            "kajol.__loaded_config__", "kajol.config.py"
+        ).conf
     except FileNotFoundError:
         if Path("pyproject.toml").is_file():
             with open("pyproject.toml") as f:
-                pyproject = tomllib.load(f)
-            
-            assert "project" in pyproject, "pyproject.toml needs a [project]" \
-                                           "table"
-            project = pyproject["project"]
-            
-            kajol_config = pyproject.get("tool", {}).get("kajol", {})
-            
-            if "dynamic" in project and "dependencies" in project["dynamic"]:
-                no_lock = False
-            
-            conf = Config(
-                name=project["name"],
-                author=project.get("authors", {"name":"Eric Idle"})[0]["name"],
-                version=project["version"],
-                summary=project.get("description", ""),
-                readme=project.get("readme", "README.md"),
-                license=project.get("license", "MIT"),
-                classifiers=project.get("classifiers", []),
-                build=BuildConfig(
-                    extensions=map(
-                        lambda d: Extension(**d), 
-                        kajol_config.get("c_exts", [])
-                    ),
-                    ignore=kajol_config.get("ignore", []),
-                    deps=project.get("dependencies", []),
-                    vendor_dir=kajol_config.get("vendor_dir"),
-                    entry_pts=project.get("scripts", {})
-                )
-            )
+                conf = Config.from_pyproject(f.read())
         else:
-            raise FileNotFoundError("config file not found: couldn't find a"
-                                    "kajol.config.py or pyproject.toml!")
+            raise FileNotFoundError(
+                "config file not found: couldn't find a" + 
+                ("kajol.config.py or " if not force_pyproject else "") + 
+                "pyproject.toml!"
+            )
     
     build_dir = Path("./build") / wheel_tags()
     shutil.rmtree(build_dir, ignore_errors=True)
     build_dir.mkdir(parents=True)
     
     print("building to", build_dir)
-
-    # compile extensions
-    if conf.build.extensions:
-        print("compiling conf.build.extensions\n")
-        for ext in conf.build.extensions:
-            compile_c(ext.files, ext.output)
     
     conf.build.ignore = [
         "*.whl", "kajol.config.py", "kajol.lock.pkl", *conf.build.ignore
@@ -148,10 +115,21 @@ def build(no_lock=False, force_pyproject=False):
     record = []
     
     deps = []
-    if Path("kajol.lock.pkl").is_file() and not no_lock:
+    if conf.build.deps:
+        deps = conf.build.deps
+    elif Path("kajol.lock.pkl").is_file() and not no_lock:
         with open("kajol.lock.pkl", "rb") as lockfile:
-            deps.extend(pickle.load(lockfile))
-    deps.extend(conf.build.deps)
+            deps = pickle.load(lockfile)
+        print("found dependencies from lockfile:", *deps)
+        if not input("are these correct? ").lower().startswith("y"):
+            deps = []
+
+    # compile extensions
+    if conf.build.extensions:
+        print("\n======= compiling C extensions")
+        for ext in conf.build.extensions:
+            compile_c(ext.files, ext.output)
+        print("======= finished compiling C extensions\n")
 
     # copy project files into stage_dir, excluding ignores
     source_dir = Path.cwd().resolve()
@@ -170,13 +148,15 @@ def build(no_lock=False, force_pyproject=False):
             record.append(str(rel))
             shutil.copy2(file_path, dest)
     
-    print("\ncopied files")
+    print("copied files")
     
-    if conf.build.vendor_dir:
-        print("vendoring deps\n")
-        install(deps, where=build_dir / conf.build.vendor_dir, no_lock=True)
-        with open(build_dir / f"_{conf.name}_vendor.pth", "w") as f:
-            f.write(str(conf.build.vendor_dir))
+    if conf.build.vendor:
+        print("\n======= vendoring dependencies")
+        install(deps, where=build_dir / conf.build.vendor.pkg_dir, 
+                no_lock=True)
+        with open(build_dir / conf.build.vendor.pth_file, "w") as f:
+            f.write(str(conf.build.vendor.pkg_dir))
+        print("======= finished vendoring dependencies")
     
     dist_info = build_dir / \
         f"{conf.name}-{conf.version}.dist-info"
@@ -193,7 +173,7 @@ def build(no_lock=False, force_pyproject=False):
         print("License:", conf.license, file=f)
         for x in conf.classifiers:
             print("Classifier:", x, file=f)
-        if not conf.build.vendor_dir:
+        if not conf.build.vendor:
             for x in deps:
                 print("Requires-Dist:", x, file=f)
         print(file=f)
@@ -204,7 +184,7 @@ def build(no_lock=False, force_pyproject=False):
         print("Wheel-Version: 1.0", file=f)
         print("Generator:", "kajol.do_build", file=f)
         print(
-            "Root-Is-Purelib:", str(not bool(conf.build.extensions)).lower(),
+            "Root-Is-Purelib:", str(not conf.build.extensions).lower(),
             file=f
         )
         print("Tag:", wheel_tags(), file=f)
@@ -225,22 +205,16 @@ def build(no_lock=False, force_pyproject=False):
     ).resolve()
 
     # compress staged contents into wheel
-    with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for file_path in build_dir.rglob("*"):
+    with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as zf:
+        files = list(build_dir.rglob("*"))
+        for i, file_path in enumerate(files):
             if file_path.is_file():
                 rel = file_path.relative_to(build_dir)
-                zipf.write(file_path, rel)
+                zf.write(file_path, rel)
+                progress_bar(f"creating wheel: {wheel.name}", i, len(files))
     
     wheels = [wheel]
     
-    print("successfully built a wheel:", wheel)
-    
-    if not conf.build.extensions:
-        wheel_pure = Path(
-            f"{conf.name}-{conf.version}-{wheel_tags_pure()}.whl"
-        ).resolve()
-        print("copying to", wheel_pure)
-        shutil.copy(wheel, wheel_pure)
-        wheels.append(wheel_pure)
+    print("\r\x1b[2Ksuccessfully built:", wheel)
     
     return wheels

@@ -14,6 +14,8 @@ conf = Config(name='test',
        classifiers=[],
        build=BuildConfig(extensions=[keywdarg],
                          ignore=[],
-                         vendor_dir="test/vendor",
-                         precompile_bytecode=False))
+                         vendor=VendorConfig(
+                            pkg_dir="test/vendor",
+                            pth_file="test/vendor.pth"
+                         )))
 

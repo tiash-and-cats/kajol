@@ -2,7 +2,7 @@ from kajol.build import *
 
 conf = Config(name='kajol',
        author='tiash-and-cats',
-       version='1.2.0',
+       version='1.3.0',
        summary='the kajol dependency manager: a FAST package manager (whoosh!)',
        readme='README.md',
        license='MIT',
@@ -14,5 +14,8 @@ conf = Config(name='kajol',
                             "__pycache__/*", ".gitignore",
                          ],
                          deps=["requests", "packaging"],
-                         vendor_dir="kajol/_vendor",
+                         vendor=VendorConfig(
+                            pth_file="kajol/vendor.pth",
+                            pkg_dir="kajol/_vendor",
+                         ),
                          entry_pts={"kajol": "kajol.__main__:main"}))
