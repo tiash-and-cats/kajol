@@ -1,3 +1,4 @@
+import kajol
 import tomlkit
 from dataclasses import dataclass, field
 
@@ -16,13 +17,14 @@ class VendorConfig:
 
 @dataclass
 class BuildConfig:
-    extensions: list[Extension] = field(default_factory=list)
     ignore: list[str] = field(default_factory=list)
-    
     deps: list[str] = field(default_factory=list)
-    vendor: VendorConfig | None = None
     
     entry_pts: dict[str, str] = field(default_factory=dict)
+    extensions: list[Extension] = field(default_factory=list)
+    
+    vendor: VendorConfig | None = None
+    compileall: bool = False
 
 @dataclass
 class Author:
@@ -69,7 +71,7 @@ class Config:
         
         authors = [Author(**d) for d in project.get("authors", [])]
         
-        return Config(
+        c = Config(
             name=project["name"],
             author=authors[0].name if authors else "anon",
             authors=authors,
@@ -85,17 +87,23 @@ class Config:
                 ],
                 ignore=kajol_config.get("ignore", []),
                 deps=project.get("dependencies", []),
-                vendor_dir=kajol_config.get("vendor_dir"),
-                entry_pts=project.get("scripts", {})
+                entry_pts=project.get("scripts", {}),
+                compileall=kajol_config.get("compileall", False)
             )
         )
-    
+        
+        if "vendor" in kajol_config:
+            c.build.vendor = VendorConfig(**kajol_config["vendor"])
+        
+        return c
+
     def pyproject(self):
         toml = {
             "build-system": {
-                "requires": ["https://github.com/tiash-and-cats/kajol/"
-                             "releases/download/v1.1.1/kajol-1.1.1-cp314-none-"
-                             "any.whl"],
+                "requires": [f"https://github.com/tiash-and-cats/kajol/"
+                             f"releases/download/v{kajol.__version__
+                             }/kajol-{kajol.__version__}-cp314-none-"
+                             f"any.whl"],
                 "build-backend": "kajol.do_build"
             },
             "project": {
@@ -110,12 +118,16 @@ class Config:
                 "description": self.summary,
             },
             "tool": {"kajol": {
-                "ignore": self.build.ignore
+                "ignore": self.build.ignore,
+                "compileall": self.build.compileall
             }}
         }
         
-        if self.build.vendor_dir:
-            toml["tool"]["kajol"]["vendor_dir"] = self.build.vendor_dir
+        if self.build.vendor:
+            toml["tool"]["kajol"]["vendor"] = {
+                "pth_file": self.build.vendor.pth_file,
+                "pkg_dir": self.build.vendor.pkg_dir
+            }
         
         if self.build.extensions:
             toml["tool"]["kajol"]["c_exts"] = list(map(

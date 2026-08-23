@@ -2,3 +2,5 @@ env
 build/
 *.whl
 *.pkl
+__pycache__ 
+*.pyd 

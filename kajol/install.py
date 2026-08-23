@@ -20,49 +20,68 @@ from dataclasses import dataclass
 from textwrap import dedent
 from configparser import ConfigParser
 
-class HTML:    
-    @staticmethod
-    def parse_dom(html_code):
-        parser = HTML._Parser()
-        parser.feed(html_code)
-        parser.close()
-        return parser.root
-    
-    @dataclass
-    class Document:
-        children: list
-        
+SUPPORTED = set(packaging.tags.sys_tags())
+SCRIPTS_DIR = Path(sysconfig.get_path("scripts"))
+
+class HTML:
+    class BaseNode: pass
+
+    class ParentNode(BaseNode):
         def all_children(self):
             def walk(node):
-                result = []
                 for child in getattr(node, "children", []):
-                    result.append(child)
-                    result.extend(walk(child))
-                return result
+                    yield child
+                    yield from walk(child)
             return walk(self)
 
+        def __iter__(self):
+            return iter(self.children)
+
     @dataclass
-    class Element:
+    class Document(ParentNode):
+        children: list
+
+        def select_all_by_tag_name(self, tag_name):
+            return filter(
+                lambda e: getattr(e, "tag", None) == tag_name, 
+                self.all_children()
+            )
+
+    @dataclass
+    class Element(ParentNode):
         tag: str
         attrs: dict
         children: list
+        
+        @property
+        def text(self):
+            return "".join(
+                child.text for child in self.all_children()
+                if isinstance(child, HTML.Text)
+            )
+
+        def __getitem__(self, k):
+            return self.attrs[k]
+
+        def __setitem__(self, k, v):
+            self.attrs[k] = v
 
     @dataclass
-    class Text:
+    class Text(BaseNode):
         text: str
 
     @dataclass
-    class Comment:
+    class Comment(BaseNode):
         text: str
 
     @dataclass
-    class ProcessingInstruction:
+    class ProcessingInstruction(BaseNode):
         target: str
         data: str
-        
+
     class _Parser(html.parser.HTMLParser):
         VOID_TAGS = {"meta", "br", "hr", "img", "input", "link", "source"}
-        
+
         def __init__(self):
             super().__init__()
             self._pending_close = collections.deque()
@@ -79,7 +98,7 @@ class HTML:
                     self._top_level_nodes.append(elmnt)
             else:
                 self._pending_close.append(elmnt)
-        
+
         def handle_comment(self, data):
             comment = HTML.Comment(data)
             if self._pending_close:
@@ -98,7 +117,7 @@ class HTML:
                     self._pending_close[-1].children.append(e)
                 else:
                     self._top_level_nodes.append(e)
-        
+
         def handle_pi(self, data):
             # Split manually into target + data if needed
             parts = data.split(maxsplit=1)
@@ -115,6 +134,13 @@ class HTML:
             if not self.root:
                 self.root = HTML.Document(self._top_level_nodes)
 
+    @staticmethod
+    def parse_dom(html_code):
+        parser = HTML._Parser()
+        parser.feed(html_code)
+        parser.close()
+        return parser.root
+
 def normalize(name):
     return re.sub(r"[-_.]+", "-", name).lower()
 
@@ -123,8 +149,6 @@ def site_packages(user=False):
         return Path(sysconfig.get_path("purelib", "user"))
     else:
         return Path(sysconfig.get_path("purelib"))
-
-supported = set(packaging.tags.sys_tags())
 
 def parse_tags(filename):
     parts = filename.split("-")
@@ -139,23 +163,25 @@ def best_wheel(requirement: Requirement):
 
     # extract all links to .whl
     wheels = []
-    for a in HTML.parse_dom(html).all_children():
-        if isinstance(a, HTML.Element) and a.tag.lower() == "a" \
-           and "data-yanked" not in a.attrs:
-            for child in a.children:
-                if isinstance(child, HTML.Text):
-                    fname = child.text.strip()
-                    if fname.endswith(".whl"):
-                        wheels.append((fname, a.attrs["href"]))
+    for a in filter(
+        lambda a: "data-yanked" not in a.attrs,
+        HTML.parse_dom(html).select_all_by_tag_name("a")
+    ):
+        for child in a.children:
+            if isinstance(child, HTML.Text):
+                fname = child.text.strip()
+                if fname.endswith(".whl"):
+                    wheels.append((fname, a.attrs["href"]))
+                    break
 
     # get supported tags
-    supported = set(packaging.tags.sys_tags())
+    SUPPORTED = set(packaging.tags.sys_tags())
 
     # collect all compatible wheels
     compatible = []
     for fname, href in wheels:
         name, version, build, tags = parse_wheel_filename(fname)
-        if tags & supported:
+        if tags & SUPPORTED:
             if not requirement.specifier or version in requirement.specifier:
                 compatible.append((version, fname, href))
 
@@ -168,16 +194,21 @@ def best_wheel(requirement: Requirement):
     return None
 
 def is_installed(req, user, where):
-    for dist_info in where.glob(f"{normalize(req.name).replace("-", "_")}-*.dist-info"):
+    for dist_info in where.glob(
+        f"{normalize(req.name).replace("-", "_")}-*.dist-info"
+    ):
         metadata_path = dist_info / "METADATA"
         if metadata_path.exists():
             text = metadata_path.read_text(encoding="utf-8")
             # Extract version line
             for line in text.splitlines():
                 if line.startswith("Version: "):
-                    installed_version = Version(line.split("Version: ")[1].strip())
+                    installed_version = Version(
+                        line.split("Version: ")[1].strip()
+                    )
                     # Check if requirement specifier allows this version
-                    if not req.specifier or installed_version in req.specifier:
+                    if not req.specifier or \
+                       installed_version in req.specifier:
                         return True
     return False
 
@@ -185,41 +216,41 @@ def get(pkgspec, user, depnts, deptree, deps, where):
     req = Requirement(pkgspec.strip())
     if not (req.marker is None or req.marker.evaluate()):
         return
-    
+
     if depnts: print()
-    
+
     if is_installed(req, user, where):
         print(f"already installed: {req} {f"(from {" -> ".join(depnts)})" if depnts else ""}")
         return
-    
+
     if not depnts:
         print("getting", req)
     else:
         print("getting", req, "from", " -> ".join(depnts))
-    
+
     content = fname = dload = None
-    
+
     if any(x[0] == req for x in deptree):
         print("    already in deptree, skipping")
         return
-    
+
     if pkgspec.endswith(".whl") and Path(pkgspec).is_file():
         with open(pkgspec, "rb") as f:
             content = f.read()
-        
+
         fpath = pkgspec
         print("    loading", pkgspec, "from file")
     else:
         wheel = best_wheel(req)
-        
+
         if not wheel:
             raise FileNotFoundError("no matching .whl file!")
-         
+
         fname, dload = wheel
-        
+
         cache = Path.home() / ".kajol" / "cache"
         cache.mkdir(exist_ok=True, parents=True)
-        
+
         fpath = cache / fname
         if not fpath.exists():
             print("    downloading", fname, "from PyPI")
@@ -231,32 +262,32 @@ def get(pkgspec, user, depnts, deptree, deps, where):
             print("    loading", fname, "from cache")
             with open(fpath, "rb") as f:
                 content = f.read()
-    
+
     if deps:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
             fs = zf.namelist()
-            
+
             if dist_info_folder := next(
-                (f for f in fs if f.split('/')[0].endswith('.dist-info')), 
+                (f for f in fs if f.split('/')[0].endswith('.dist-info')),
                 None
             ):
                 folder_prefix = dist_info_folder.split('/')[0]
                 metadata_path = f"{folder_prefix}/METADATA"
-                
+
                 try:
                     metadata_bytes = zf.read(metadata_path)
                     metadata_text = metadata_bytes.decode("utf-8")
-                    
+
                     deps = [
-                        x.removeprefix("Requires-Dist: ") 
-                        for x in metadata_text.split("\n") 
+                        x.removeprefix("Requires-Dist: ")
+                        for x in metadata_text.split("\n")
                         if x.startswith("Requires-Dist: ")
                     ]
                     for dep in deps:
                         get(dep, user, depnts + (str(req),), deptree, True, where)
                 except KeyError:
                     raise FileNotFoundError(f"could not find {wheel}/{folder_prefix}/METADATA")
-    
+
     deptree.add((req, fpath))
 
 BAR = chr(9608)
@@ -266,6 +297,9 @@ def progress_bar(txt, progress, total):
     Based on Progress Bar Simulation, by Al Sweigart al@inventwithpython.com
     available at https://nostarch.com/big-book-small-python-programming
     """
+    if len(txt) > 50:
+        txt = txt[:47] + "..."
+
     bar = ''  # The progress bar will be a string value.
     bar += '['  # Create the left end of the progress bar.
 
@@ -300,30 +334,30 @@ def add_executable_bit(filepath):
 def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
     if not where:
         where = site_packages()
-    
+
     where.mkdir(exist_ok=True, parents=True)
-    
+
     if not pkgspecs:
         deps = False
         with open("kajol.lock.pkl", "rb") as f:
             pkgspecs = pickle.load(f)
-    
+
     deptree = set()
     for pkgspec in pkgspecs:
         get(pkgspec, user, (), deptree, deps, where)
         print()
-    
+
     conf = ConfigParser()
-    
+
     for i, dep in enumerate(deptree):
         req, fpath = dep
         progress_bar(f"installing {req.name}", i, len(deptree))
-                
+
         with zipfile.ZipFile(fpath) as zf:
             fs = zf.namelist()
-            
+
             if dist_info_folder := next(
-                (f for f in fs if f.split('/')[0].endswith('.dist-info')), 
+                (f for f in fs if f.split('/')[0].endswith('.dist-info')),
                 None
             ):
                 try:
@@ -334,10 +368,10 @@ def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
                     entries = conf["console_scripts"]
                     for ex, fn in entries.items():
                         mod, fn = fn.split(":", 1)
-                        
+
                         if os.name == "nt":
                             with open(
-                                Path(sysconfig.get_path("scripts")) / 
+                                SCRIPTS_DIR /
                                 (ex + ".bat"), "w"
                             ) as f:
                                 f.write(
@@ -347,7 +381,7 @@ def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
                                 )
                         else:
                             with open(
-                                Path(sysconfig.get_path("scripts")) / ex, "w"
+                                SCRIPTS_DIR / ex, "w"
                             ) as f:
                                 f.write(dedent(f"""
                                     #!{sys.executable}
@@ -357,17 +391,17 @@ def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
                                         sys.exit({fn}())
                                 """))
                             add_executable_bit(
-                                Path(sysconfig.get_path("scripts")) / ex
+                                SCRIPTS_DIR / ex
                             )
                 except KeyError:
                     pass # no entry_points.txt? fine!
-                
+
             zf.extractall(where)
-    
+
     print(f"\r\x1b[2Kfinished installing: {
         ", ".join([dep[0].name for dep in deptree]) if deptree else "(none)"
     }")
-    
+
     if not no_lock:
         lockfile = Path("kajol.lock.pkl")
         if lockfile.is_file():
@@ -388,9 +422,9 @@ def uninstall(pkgname, *, user=False, yes=False):
 
     if not yes and not input(f"are you sure you want to uninstall {pkgname}? ") == "y":
         return
-        
+
     conf = ConfigParser()
-        
+
     for dist_info in dist_infos:
         if (entry_points_path := dist_info / "entry_points.txt").is_file():
             conf.read(entry_points_path)
@@ -400,23 +434,23 @@ def uninstall(pkgname, *, user=False, yes=False):
                     if os.name == "nt":
                         try:
                             os.remove(
-                                Path(sysconfig.get_path("scripts")) / 
+                                SCRIPTS_DIR /
                                 (ex + ".bat")
                             )
                         except:
                             try:
                                 os.remove(
-                                    Path(sysconfig.get_path("scripts")) / 
+                                    SCRIPTS_DIR /
                                     (ex + ".exe")
                                 )
                             except: pass
                     else:
                         try:
                             os.remove(
-                                Path(sysconfig.get_path("scripts")) / ex, "w"
+                                SCRIPTS_DIR / ex, "w"
                             )
                         except: pass
-        
+
         record_path = dist_info / "RECORD"
         if record_path.exists():
             lines = record_path.read_text(encoding="utf-8").splitlines()
@@ -437,7 +471,7 @@ def uninstall(pkgname, *, user=False, yes=False):
             print(f"\r\x1b[2Kfinished uninstalling {pkgname}")
         else:
             print(f"no RECORD file found in {dist_info}, skipping")
-    
+
     lockfile = Path("kajol.lock.pkl")
     if lockfile.is_file():
         with lockfile.open("rb") as f:
@@ -463,7 +497,7 @@ def sp_cleanup_empty_dirs(*, user=False):
         if not full.is_dir():
             continue
         try:
-            # If directory has no entries other than __pycache__ 
+            # If directory has no entries other than __pycache__
             # (even if __pycache__ has .pyc files), remove it
             if not any(
                 x for x in full.iterdir()

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["https://github.com/tiash-and-cats/kajol/releases/download/v1.1.1/kajol-1.1.1-cp314-none-any.whl"]
+build-backend = "kajol.do_build"
+
+[project]
+name = "ktest"
+version = "0.0.0"
+readme = "README.md"
+license = "MIT"
+dependencies = []
+classifiers = []
+description = ""
+
+[[project.authors]]
+name = "Eric Idle"
+email = "ericidle@example.com"
+
+[tool.kajol]
+ignore = ["test_env/*"]
+compileall = true
+
+[tool.kajol.vendor]
+pth_file = "_ktest_vendor.pth"
+pkg_dir = "ktest/vendor"
+
+[[tool.kajol.c_exts]]
+files = ["ktest/keywdarg.c"]
+output = "ktest/keywdarg"

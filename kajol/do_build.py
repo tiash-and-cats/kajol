@@ -1,4 +1,5 @@
 import sys
+import shlex
 import sysconfig
 import subprocess
 import importlib.util
@@ -8,30 +9,50 @@ import pickle
 import zipfile
 import tomlkit as tomllib
 import os
+import shutil
 from pprint import pprint
 from pathlib import Path
 from configparser import ConfigParser as IniParser
-import shutil
 
 from kajol.build import *
 from kajol.install import install, progress_bar
+from kajol._compileall_patch import compileall
 
 def compile_c(files, out):
-    gcc = shutil.which("gcc")
-    if not gcc:
-        raise RuntimeError("gcc not found in PATH")
+    bi = compile_c_buildinfo()
 
-    # Get Python build configuration
+    # Ensure output has correct suffix
+    _, ext_suffix, _ = bi
+    if not out.endswith(ext_suffix):
+        out = out + ext_suffix
+
+    if shutil.which("cl"):
+        cmd = compile_c_msvc(bi, files, out)
+    elif shutil.which("gcc"):
+        cmd = compile_c_gcc(bi, files, out)
+    elif shutil.which("clang"):
+        cmd = compile_c_gcc(bi, files, out, clang=True)
+    else:
+        raise RuntimeError("No supported C compiler "
+                           "(MSVC, GCC or Clang) found in PATH")
+
+    print("    $", shlex.join(cmd))
+    subprocess.run(cmd, check=True)
+    return Path(out)
+
+def compile_c_buildinfo():
     include_dir = sysconfig.get_paths()["include"]
     lib_dir = sysconfig.get_config_var("LIBDIR")
     ext_suffix = sysconfig.get_config_var("EXT_SUFFIX")
     lib_name = f"python{sys.version_info.major}{sys.version_info.minor}"
 
-    # Ensure output has correct suffix
-    if not out.endswith(ext_suffix):
-        out = out + ext_suffix
+    return (include_dir, ext_suffix, (lib_dir, lib_name))
 
-    cmd = [
+def compile_c_gcc(bi, files, out, *, clang=False):
+    gcc = shutil.which("gcc" if not clang else "clang")
+    include_dir, _, (lib_dir, lib_name) = bi
+
+    return [
         gcc,
         "-shared",
         "-fPIC",  # needed on Unix
@@ -42,9 +63,21 @@ def compile_c(files, out):
         "-o", str(out)
     ]
 
-    print("    $", " ".join(map(str, cmd)))
-    subprocess.run(cmd, check=True)
-    return Path(out)
+def compile_c_msvc(bi, files, out):
+    cl = shutil.which("cl")
+    include_dir, _, (lib_dir, _) = bi
+
+    return [
+        cl,
+        "/LD",
+        "/O2",
+        "/I",
+        include_dir,
+        *files,
+        "/link",
+        f"/LIBPATH:{lib_dir}",
+        f"/OUT:{out}"
+    ]
 
 def load_module_from_file(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -97,23 +130,23 @@ def build(no_lock=False, force_pyproject=False):
                 conf = Config.from_pyproject(f.read())
         else:
             raise FileNotFoundError(
-                "config file not found: couldn't find a" + 
-                ("kajol.config.py or " if not force_pyproject else "") + 
+                "config file not found: couldn't find a" +
+                ("kajol.config.py or " if not force_pyproject else "") +
                 "pyproject.toml!"
             )
-    
+
     build_dir = Path("./build") / wheel_tags()
     shutil.rmtree(build_dir, ignore_errors=True)
     build_dir.mkdir(parents=True)
-    
+
     print("building to", build_dir)
-    
+
     conf.build.ignore = [
         "*.whl", "kajol.config.py", "kajol.lock.pkl", *conf.build.ignore
     ]
-        
+
     record = []
-    
+
     deps = []
     if conf.build.deps:
         deps = conf.build.deps
@@ -133,38 +166,67 @@ def build(no_lock=False, force_pyproject=False):
 
     # copy project files into stage_dir, excluding ignores
     source_dir = Path.cwd().resolve()
-    for file_path in source_dir.rglob("*"):
+    files = [
+        p for p in source_dir.rglob("*")
+        if not any(
+            fnmatch.fnmatch(str(p.relative_to(source_dir)), pat)
+            for pat in conf.build.ignore
+        )
+    ]
+    for i, file_path in enumerate(files):
         if is_inside(file_path, build_dir): continue
         if file_path.is_file():
             rel = file_path.relative_to(source_dir)
-
-            # skip ignored patterns
-            if any(fnmatch.fnmatch(str(rel), pat) for pat in \
-                   conf.build.ignore):
-                continue
 
             dest = build_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             record.append(str(rel))
             shutil.copy2(file_path, dest)
-    
-    print("copied files")
-    
+            progress_bar(f"copying file {rel}", i, len(files))
+
+    print("\r\x1b[2Kcopied files")
+
+    # vendor deps
     if conf.build.vendor:
+        pkg_dir = build_dir / conf.build.vendor.pkg_dir
+        
         print("\n======= vendoring dependencies")
-        install(deps, where=build_dir / conf.build.vendor.pkg_dir, 
-                no_lock=True)
+        install(deps, where=pkg_dir, no_lock=True)
         with open(build_dir / conf.build.vendor.pth_file, "w") as f:
             f.write(str(conf.build.vendor.pkg_dir))
-        print("======= finished vendoring dependencies")
-    
+        print("======= finished vendoring dependencies\n")
+
+        files = list(pkg_dir.rglob("*.dist-info"))
+        for i, file_path in enumerate(files):
+            if file_path.is_dir():
+                shutil.rmtree(file_path)
+                progress_bar(f"deleting dir {file_path}", i, len(files))
+        
+        print(f"\r\x1b[2Kdeleted all *.dist-infos in {pkg_dir}")
+
+    # compile Python files
+    if conf.build.compileall:
+        print(f"compiling all .py files in {build_dir} to .pyc... ", end="",
+              flush=True)
+        if not compileall.compile_dir(build_dir, quiet=2, legacy=True):
+            raise RuntimeError("some files failed to compile")
+        print("done")
+        
+        files = list(build_dir.rglob("*.py"))
+        for i, file_path in enumerate(files):
+            if file_path.is_file():
+                os.remove(file_path)
+                progress_bar(f"deleting file {file_path}", i, len(files))
+        
+        print(f"\r\x1b[2Kdeleted all *.py files in {build_dir}")
+
     dist_info = build_dir / \
         f"{conf.name}-{conf.version}.dist-info"
     dist_info.mkdir(parents=True, exist_ok=True)
-    
+
     with open(dist_info / "RECORD", "w") as f:
         f.write("\n".join(record))
-    
+
     with open(dist_info / "METADATA", "w") as f:
         print("Metadata-Version: 2.4", file=f)
         print("Name:", conf.name, file=f)
@@ -179,25 +241,26 @@ def build(no_lock=False, force_pyproject=False):
         print(file=f)
         with open(conf.readme) as readme:
             shutil.copyfileobj(readme, f)
-    
+
     with open(dist_info / "WHEEL", "w") as f:
         print("Wheel-Version: 1.0", file=f)
-        print("Generator:", "kajol.do_build", file=f)
+        print("Generator: kajol.do_build", file=f)
         print(
-            "Root-Is-Purelib:", str(not conf.build.extensions).lower(),
+            "Root-Is-Purelib:", str(not conf.build.extensions and \
+                                    not conf.build.compileall).lower(),
             file=f
         )
         print("Tag:", wheel_tags(), file=f)
         print(file=f)
         print(file=f)
-    
+
     if conf.build.entry_pts:
         with open(dist_info / "entry_points.txt", "w") as f:
             ini = IniParser()
             ini["console_scripts"] = conf.build.entry_pts
             ini.write(f)
-    
-    print("\ncreated", dist_info)
+
+    print("created", dist_info)
 
     # build wheel filename
     wheel = Path(
@@ -212,9 +275,9 @@ def build(no_lock=False, force_pyproject=False):
                 rel = file_path.relative_to(build_dir)
                 zf.write(file_path, rel)
                 progress_bar(f"creating wheel: {wheel.name}", i, len(files))
-    
+
     wheels = [wheel]
-    
+
     print("\r\x1b[2Ksuccessfully built:", wheel)
-    
+
     return wheels
