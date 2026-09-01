@@ -154,12 +154,18 @@ def parse_tags(filename):
     parts = filename.split("-")
     return {packaging.tags.Tag(parts[2], parts[3], parts[4].removesuffix(".whl"))}
 
+def _get_cached_response(url, _cache={}):
+    if url in _cache:
+        return _cache[url]
+    else:
+        html = requests.get(url)
+        html.raise_for_status()
+        return html.text
+
 def best_wheel(requirement: Requirement):
     # fetch the simple index page
     url = f"https://pypi.org/simple/{normalize(requirement.name)}/"
-    html = requests.get(url)
-    html.raise_for_status()
-    html = html.text
+    html = _get_cached_response(url)
 
     # extract all links to .whl
     wheels = []
@@ -220,7 +226,9 @@ def get(pkgspec, user, depnts, deptree, deps, where):
     if depnts: print()
 
     if is_installed(req, user, where):
-        print(f"already installed: {req} {f"(from {" -> ".join(depnts)})" if depnts else ""}")
+        print(f"already installed: {req} {
+            f"(from {" -> ".join(depnts)})" if depnts else ""
+        }")
         return
 
     if not depnts:
@@ -283,10 +291,14 @@ def get(pkgspec, user, depnts, deptree, deps, where):
                         for x in metadata_text.split("\n")
                         if x.startswith("Requires-Dist: ")
                     ]
+                    
                     for dep in deps:
-                        get(dep, user, depnts + (str(req),), deptree, True, where)
+                        get(dep, user, depnts + (str(req),),
+                            deptree, True, where)
+                            
                 except KeyError:
-                    raise FileNotFoundError(f"could not find {wheel}/{folder_prefix}/METADATA")
+                    raise FileNotFoundError(
+                        f"could not find {wheel}/{folder_prefix}/METADATA")
 
     deptree.add((req, content))
 

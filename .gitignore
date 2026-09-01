@@ -4,3 +4,4 @@ build/
 *.pkl
 __pycache__ 
 *.pyd 
+*.pyc 

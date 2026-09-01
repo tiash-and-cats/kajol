@@ -27,7 +27,7 @@ def PYVERSIONS():
     html = HTML.parse_dom(res.text)
     pattern = re.compile(r'^(\d+\.\d+(\.\d+)?)/$')
 
-    grouped = {"_flat": {"1.3.0"}, "1.3": ["1.3.0"]}
+    grouped = {"_flat": set()}
     for a in html.select_all_by_tag_name("a"):
         match = pattern.match(a.text)
         if match:
