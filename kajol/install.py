@@ -288,7 +288,7 @@ def get(pkgspec, user, depnts, deptree, deps, where):
                 except KeyError:
                     raise FileNotFoundError(f"could not find {wheel}/{folder_prefix}/METADATA")
 
-    deptree.add((req, fpath))
+    deptree.add((req, content))
 
 BAR = chr(9608)
 
@@ -350,10 +350,10 @@ def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
     conf = ConfigParser()
 
     for i, dep in enumerate(deptree):
-        req, fpath = dep
+        req, content = dep
         progress_bar(f"installing {req.name}", i, len(deptree))
 
-        with zipfile.ZipFile(fpath) as zf:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
             fs = zf.namelist()
 
             if dist_info_folder := next(
