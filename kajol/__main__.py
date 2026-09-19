@@ -141,7 +141,7 @@ def main():
     original_argv = sys.argv[:]
     
     for idx in range(len(sys.argv) - 1):
-        if sys.argv[idx] == "python" and sys.argv[idx + 1] == "exec":
+        if sys.argv[idx].startswith("py") and sys.argv[idx + 1] == "exec":
             exec_idx = idx + 1
             # Look for wrapper flag values directly after 'exec'
             stop_idx = exec_idx + 1
@@ -186,7 +186,7 @@ def main():
 
     args = parser.parse_args()
     
-    if args.command == "python" and args.pycommand == "exec":
+    if args.command.startswith("py") and args.pycommand == "exec":
         args.args = forwarded_args
 
     match args.command:

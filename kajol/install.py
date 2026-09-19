@@ -7,7 +7,9 @@ import collections
 import requests
 import pathlib
 import packaging.tags
+import tempfile
 import zipfile
+import tarfile
 import pickle
 import io
 import os
@@ -16,12 +18,30 @@ from pathlib import Path
 from packaging.utils import parse_wheel_filename
 from packaging.requirements import Requirement
 from packaging.version import Version
+from packaging.markers import default_environment
 from dataclasses import dataclass
 from textwrap import dedent
 from configparser import ConfigParser
 
+from kajol.shared import progress_bar
+
+from build import ProjectBuilder
+from build.env import DefaultIsolatedEnv
+
 SUPPORTED = set(packaging.tags.sys_tags())
 SCRIPTS_DIR = Path(sysconfig.get_path("scripts"))
+
+if hasattr(sys, 'real_prefix') or (sys.base_prefix != sys.prefix):
+    # inside a virtual environment (venv/virtualenv)
+    scheme = "posix_prefix" if sys.platform != "win32" else "nt"
+else:
+    # using global system/user paths
+    scheme = sysconfig.get_default_scheme()
+
+DATA_PATHS = {
+    k: Path(v) for k, v in sysconfig.get_paths(scheme=scheme).items()
+}
+DATA_PATHS["headers"] = DATA_PATHS["include"]
 
 class HTML:
     class BaseNode: pass
@@ -199,6 +219,42 @@ def best_wheel(requirement: Requirement):
 
     return None
 
+def best_sdist(requirement: Requirement):
+    # fetch the simple index page
+    url = f"https://pypi.org/simple/{normalize(requirement.name)}/"
+    html = _get_cached_response(url)
+
+    # extract all links to sdists
+    sdists = []
+    for a in filter(
+        lambda a: "data-yanked" not in a.attrs,
+        HTML.parse_dom(html).select_all_by_tag_name("a")
+    ):
+        for child in a.children:
+            if isinstance(child, HTML.Text):
+                fname = child.text.strip()
+                if fname.endswith((".tar.gz", ".zip")):
+                    sdists.append((fname, a.attrs["href"]))
+                    break
+
+    # pick the latest version among sdists that match the specifier
+    compatible = []
+    for fname, href in sdists:
+        # crude version parsing: strip extension and split
+        version_str = fname.split("-", 1)[1] \
+            .removesuffix(".tar.gz").removesuffix(".zip")
+            
+        version = Version(version_str)
+        if not requirement.specifier or version in requirement.specifier:
+            compatible.append((version, fname, href))
+
+    if compatible:
+        compatible.sort(key=lambda x: x[0], reverse=True)
+        latest = compatible[0]
+        return latest[1], latest[2].split("#", 1)[0]  # filename, download link
+
+    return None
+
 def is_installed(req, user, where):
     for dist_info in where.glob(
         f"{normalize(req.name).replace("-", "_")}-*.dist-info"
@@ -218,10 +274,89 @@ def is_installed(req, user, where):
                         return True
     return False
 
-def get(pkgspec, user, depnts, deptree, deps, where):
+def find_either_file(start_dir, file_a, file_b):
+    for root, dirs, files in os.walk(start_dir):
+        for file in files:
+            if file == file_a:
+                return os.path.join(root, file)
+            elif file == file_b:
+                return os.path.join(root, file)
+    return None, None
+
+def build_from_sdist(fname, dload):
+    print("    downloading", fname, "sdist from PyPI")
+    response = requests.get(dload)
+    response.raise_for_status()
+
+    with tempfile.TemporaryDirectory() as tmpdir:        
+        sdist_path = Path(tmpdir) / fname
+        with open(sdist_path, "wb") as f:
+            f.write(response.content)
+
+        # unpack
+        unpack_dir = Path(tmpdir) / "src"
+        unpack_dir.mkdir()
+        if fname.endswith(".tar.gz"):
+            with tarfile.open(sdist_path, "r:gz") as tf:
+                tf.extractall(unpack_dir)
+        elif fname.endswith(".zip"):
+            with zipfile.ZipFile(sdist_path) as zf:
+                zf.extractall(unpack_dir)
+
+        # build wheel
+        with DefaultIsolatedEnv() as env:
+            path = Path(
+                find_either_file(unpack_dir, "pyproject.toml", "setup.py")
+            ).parent
+            
+            builder = ProjectBuilder.from_isolated_env(env, str(path))
+            
+            print("    installing requirements to build wheel")
+            env.install(builder.build_system_requires)
+            env.install(builder.get_requires_for_build("wheel"))
+            
+            print("    building to temp wheel")
+            built_path = builder.build("wheel", Path(tempfile.gettempdir()))
+            
+        wheel_path = Path(built_path)
+        content = wheel_path.read_bytes()
+        return content, wheel_path
+
+def find_cached_wheel(requirement: Requirement, cache: Path):
+    for wheel in cache.glob("*.whl"):
+        try:
+            name, version, build, tags = parse_wheel_filename(wheel.name)
+        except Exception:
+            continue
+        if name == requirement.name:
+            if not requirement.specifier or version in requirement.specifier:
+                return wheel
+    return None
+
+def get(pkgspec, user, depnts, deptree, deps, where, parent):
     req = Requirement(pkgspec.strip())
-    if not (req.marker is None or req.marker.evaluate()):
-        return
+    
+    if req.marker is not None:
+        # fetch the baseline environment variables (OS, python_version, etc.)
+        base_env = default_environment()
+        
+        if not parent:
+            # no parent extras means 'extra' is empty in this context
+            base_env["extra"] = ""
+            is_applicable = req.marker.evaluate(base_env)
+        else:
+            # parent has extras, see if ANY of them satisfy the marker
+            is_applicable = False
+            for extra in parent.extras:
+                # merge the specific extra into a copy of the base environment
+                env_copy = base_env.copy()
+                env_copy["extra"] = extra
+                if req.marker.evaluate(env_copy):
+                    is_applicable = True
+                    break
+                    
+        if not is_applicable:
+            return
 
     if depnts: print()
 
@@ -252,24 +387,29 @@ def get(pkgspec, user, depnts, deptree, deps, where):
         wheel = best_wheel(req)
 
         if not wheel:
-            raise FileNotFoundError("no matching .whl file!")
-
-        fname, dload = wheel
-
-        cache = Path.home() / ".kajol" / "cache"
-        cache.mkdir(exist_ok=True, parents=True)
-
-        fpath = cache / fname
-        if not fpath.exists():
-            print("    downloading", fname, "from PyPI")
-            response = requests.get(dload)
-            with open(fpath, "wb") as f:
-                f.write(response.content)
-            content = response.content
+            sdist = best_sdist(req)
+            if not sdist:
+                raise FileNotFoundError("no matching .whl or sdist!")
+            fname, dload = sdist
+            
+            content, fpath = build_from_sdist(fname, dload)
         else:
-            print("    loading", fname, "from cache")
-            with open(fpath, "rb") as f:
-                content = f.read()
+            fname, dload = wheel
+
+            cache = Path.home() / ".kajol" / "cache"
+            cache.mkdir(exist_ok=True, parents=True)
+
+            fpath = cache / fname
+            if not fpath.exists():
+                print("    downloading", fname, "from PyPI")
+                response = requests.get(dload)
+                with open(fpath, "wb") as f:
+                    f.write(response.content)
+                content = response.content
+            else:
+                print("    loading", fname, "from cache")
+                with open(fpath, "rb") as f:
+                    content = f.read()
 
     if deps:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
@@ -294,48 +434,13 @@ def get(pkgspec, user, depnts, deptree, deps, where):
                     
                     for dep in deps:
                         get(dep, user, depnts + (str(req),),
-                            deptree, True, where)
+                            deptree, True, where, req)
                             
                 except KeyError:
                     raise FileNotFoundError(
                         f"could not find {wheel}/{folder_prefix}/METADATA")
 
     deptree.add((req, content))
-
-BAR = chr(9608)
-
-def progress_bar(txt, progress, total):
-    """
-    Based on Progress Bar Simulation, by Al Sweigart al@inventwithpython.com
-    available at https://nostarch.com/big-book-small-python-programming
-    """
-    if len(txt) > 50:
-        txt = txt[:47] + "..."
-
-    bar = ''  # The progress bar will be a string value.
-    bar += '['  # Create the left end of the progress bar.
-
-    # Make sure that the amount of progress is between 0 and total:
-    if progress > total:
-        progress = total
-    if progress < 0:
-        progress = 0
-
-    # Calculate the number of "bars" to display:
-    bars = int((progress / total) * 30)
-
-    bar += BAR * bars  # Add the progress bar.
-    bar += ' ' * (30 - bars)  # Add empty space.
-    bar += ']'  # Add the right end of the progress bar.
-
-    # Calculate the percentage complete:
-    pcent = round(progress / total * 100, 1)
-    bar += ' ' + str(pcent).rjust(5) + '%'  # Add percentage.
-
-    # Add the numbers:
-    bar += ' ' + str(progress) + '/' + str(total)
-
-    print("\r\x1b[2K" + txt.ljust(max(30, len(txt) + 5)) + bar, end="")
 
 def add_executable_bit(filepath):
     current_permissions = os.stat(filepath).st_mode
@@ -356,7 +461,7 @@ def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
 
     deptree = set()
     for pkgspec in pkgspecs:
-        get(pkgspec, user, (), deptree, deps, where)
+        get(pkgspec, user, (), deptree, deps, where, None)
         print()
 
     conf = ConfigParser()
@@ -408,6 +513,29 @@ def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
                 except KeyError:
                     pass # no entry_points.txt? fine!
 
+            if data_folder := next(
+                (f for f in fs if f.split('/')[0].endswith('.data')),
+                None
+            ):
+                folder_prefix = data_folder.split('/')[0]
+                for f in fs:
+                    if not f.startswith(folder_prefix + "/"):
+                        continue
+                    parts = f.split("/", 2)
+                    if len(parts) < 2:
+                        continue
+                    subdir = parts[1]  # e.g. "scripts", "purelib", "headers"
+                    target = DATA_PATHS.get(subdir)
+                    if target:
+                        relpath = parts[2] if len(parts) > 2 else ""
+                        dest = target / relpath
+                        if f.endswith("/"):
+                            dest.mkdir(parents=True, exist_ok=True)
+                        else:
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            with zf.open(f) as src, open(dest, "wb") as out:
+                                shutil.copyfileobj(src, out)
+
             zf.extractall(where)
 
     print(f"\r\x1b[2Kfinished installing: {
@@ -428,6 +556,7 @@ def install(pkgspecs=None, *, user=False, deps=True, where=None, no_lock=False):
 def uninstall(pkgname, *, user=False, yes=False):
     sp = site_packages(user)
     dist_infos = list(sp.glob(f"{normalize(pkgname).replace("-", "_")}-*.dist-info"))
+    
     if not dist_infos:
         print(f"{pkgname} is not installed")
         return

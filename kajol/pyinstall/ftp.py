@@ -10,15 +10,13 @@ from packaging.version import Version
 
 import kajol
 from kajol.install import HTML
-
-from kajol.pyinstall.shared import (PYVERSIONS, download, latest_python, 
-                             _installed_python, list_installed_python,
-                             uninstall_python, shell, list_available_python,
-                             _get_latest_installed, exec_python,
-                             add_to_windows_user_path)
+from kajol.pyinstall.shared import PYVERSIONS, download, add_to_windows_user_path
 
 # --- Installer picker ---
 def get_best_installer(version, auto_retry, allow_exe=False, allow_zip=True):
+    if Version(version) < Version("3.10"):
+        allow_zip, allow_exe = False, True
+    
     url = f"https://www.python.org/ftp/python/{version}/"
     headers = {'User-Agent': f"kajol/{kajol.__version__}"}
     res = requests.get(url, headers=headers)
